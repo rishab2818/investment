@@ -409,3 +409,23 @@ def get_latest_10k_url(ticker_symbol):
         return None
     except Exception:
         return None
+
+@st.cache_data(ttl=3600)  # Cache headlines for 1 hour to avoid rate limits
+def get_recent_news(ticker_symbol, limit=5):
+    """
+    Fetches the most recent news headlines for a ticker using yfinance.
+    Useful for feeding recent qualitative sentiment directly into the AI.
+    """
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        news = ticker.news
+        headlines = []
+        if news:
+            for item in news[:limit]:
+                title = item.get("title", "")
+                if title:
+                    headlines.append(title)
+        return headlines
+    except Exception as e:
+        print(f"Error fetching news for {ticker_symbol}: {e}")
+        return []

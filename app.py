@@ -592,24 +592,43 @@ def main():
                 from models.optimizer import generate_rebalance_plan
                 from models.portfolio_backtester import run_portfolio_backtest
                 from models.llm_analyzer import generate_portfolio_constraints, generate_portfolio_narrative
-                from data.fetcher import get_stock_fundamentals
+                from data.fetcher import get_stock_fundamentals, get_recent_news
+                from models.monte_carlo import run_monte_carlo_simulation
                 
-                st.write("Fetching real-time fundamentals for current holdings...")
-                # Fetch basic fundamentals to feed the AI
+                st.write("Fetching real-time fundamentals and breaking news for current holdings...")
+                # Fetch basic fundamentals and news to feed the AI
                 fundamental_context = {}
+                news_context = {}
                 for t in tickers:
                     data = get_stock_fundamentals(t)
                     if "error" not in data:
                         fundamental_context[t] = data
+                    news = get_recent_news(t)
+                    if news:
+                        news_context[t] = news
                         
-                st.write("AI is analyzing your goals and generating mathematical constraints...")
+                st.write("AI is analyzing your goals, market news, and generating mathematical constraints...")
                 # Ask AI for bounds
-                ai_bounds = generate_portfolio_constraints(tickers, user_prompt_profile, fundamental_context)
+                ai_response = generate_portfolio_constraints(tickers, user_prompt_profile, fundamental_context, news_context)
+                
+                # The AI now returns a complex JSON with ticker_bounds and sector_bounds
+                ai_ticker_bounds = ai_response.get("ticker_bounds", {}) if isinstance(ai_response, dict) else ai_response
+                ai_sector_bounds = ai_response.get("sector_bounds", {}) if isinstance(ai_response, dict) else {}
                 
                 st.write("Running PyPortfolioOpt Mathematical Optimizer...")
                 # Objective picking
                 objective = "min_volatility" if risk_tol in ["Very Conservative", "Conservative"] else "max_sharpe"
-                opt_result = generate_rebalance_plan(tickers, constraint_overrides=ai_bounds, objective=objective)
+                
+                # Build a simple sector mapper for the optimizer
+                sector_mapper = {t: fundamental_context.get(t, {}).get("sector", "Unknown_Sector") for t in tickers}
+                
+                opt_result = generate_rebalance_plan(
+                    tickers, 
+                    constraint_overrides=ai_ticker_bounds, 
+                    sector_constraints=ai_sector_bounds,
+                    sector_mapper=sector_mapper,
+                    objective=objective
+                )
                 
                 if opt_result.get("error"):
                     status.update(label="Optimization Failed", state="error", expanded=True)
@@ -618,6 +637,7 @@ def main():
                     proposed_weights = opt_result["weights"]
                     st.session_state.proposed_weights = proposed_weights
                     st.session_state.original_weights = original_weights
+                    st.session_state.active_news_context = news_context
                     
                     st.write("Simulating historical performance for Empirical Validation...")
                     # Isolate backtest validation
@@ -637,9 +657,21 @@ def main():
                         optimized_metrics=opt_metrics
                     )
                     
+                    st.write("Projecting Monte Carlo Forward Simulations (10,000 Paths)...")
+                    # Project Forward Expected Value (Assuming 10k initial investment for cleaner metrics)
+                    years_map = {"< 1 Year": 1, "1 - 3 Years": 3, "3 - 5 Years": 5, "5 - 10 Years": 10, "10+ Years": 20}
+                    sim_years = years_map.get(horizon, 5)
+                    mc_result = run_monte_carlo_simulation(
+                        expected_return=opt_result["expected_annual_return"],
+                        volatility=opt_result["annual_volatility"],
+                        initial_investment=10000,
+                        years=sim_years
+                    )
+                    
                     st.session_state.rebalance_narrative = narrative
                     st.session_state.rebalance_bt_result = bt_result
                     st.session_state.rebalance_opt_result = opt_result
+                    st.session_state.rebalance_mc_result = mc_result
                     
                     status.update(label="Rebalance Complete!", state="complete", expanded=False)
                     
@@ -673,7 +705,15 @@ def main():
                 
             # The AI Justification Message
             st.markdown("### 🤖 Robo-Advisor Memo")
-            render_ai_insight(st.session_state.rebalance_narrative, icon="👔")
+            render_ai_insight(st.session_state.rebalance_narrative)
+            
+            # Live News Sentiment Context
+            if "active_news_context" in st.session_state and st.session_state.active_news_context:
+                with st.expander("📰 Live News Sentiment Fed to AI", expanded=False):
+                    for t, headlines in st.session_state.active_news_context.items():
+                        st.markdown(f"**{t}**")
+                        for h in headlines:
+                            st.caption(f"- {h}")
             
             # --- TRANSPARENCY SECTION ---
             st.markdown("---")
@@ -728,6 +768,41 @@ def main():
                 with v_col1: render_metric_card("Annualized Return", f"Orig: {orig_m['annual_return']*100:.1f}% | New: {opt_m['annual_return']*100:.1f}%", is_positive=opt_m['annual_return'] > orig_m['annual_return'])
                 with v_col2: render_metric_card("Sharpe Ratio", f"Orig: {orig_m['sharpe']:.2f} | New: {opt_m['sharpe']:.2f}", is_positive=opt_m['sharpe'] > orig_m['sharpe'])
                 with v_col3: render_metric_card("Max Drawdown", f"Orig: {orig_m['max_drawdown']*100:.1f}% | New: {opt_m['max_drawdown']*100:.1f}%", is_positive=opt_m['max_drawdown'] > orig_m['max_drawdown'])
+                
+            # Forward Looking Monte Carlo Projection
+            st.markdown("---")
+            st.subheader(f"🔮 Forward Projection ({horizon})")
+            mc_res = st.session_state.get("rebalance_mc_result")
+            if mc_res and "error" not in mc_res:
+                st.info(f"Simulating Geometric Brownian Motion (10,000 Iterations) evaluating your Expected Returns and Volatility. Initial Seed: $10,000")
+                
+                # Distribution cards
+                m_col1, m_col2, m_col3 = st.columns(3)
+                with m_col1: render_metric_card("P5 (Worst Case)", f"${mc_res['p5_value']:,.2f}", is_positive=False)
+                with m_col2: render_metric_card("P50 (Expected Case)", f"${mc_res['p50_value']:,.2f}", is_positive=True)
+                with m_col3: render_metric_card("P95 (Best Case)", f"${mc_res['p95_value']:,.2f}", is_positive=True)
+                
+                # Plotly line chart rendering 100 sample paths
+                fig_mc = go.Figure()
+                for path in mc_res["sample_paths"]:
+                    fig_mc.add_trace(go.Scatter(x=mc_res["days"], y=path, mode='lines', line=dict(color='rgba(16, 185, 129, 0.05)', width=1), showlegend=False, hoverinfo='skip'))
+                    
+                # Highlighting the Expected Case roughly
+                fig_mc.add_trace(go.Scatter(x=[mc_res["days"][-1]], y=[mc_res["p50_value"]], mode='markers', name="Expected Outcome", marker=dict(color='#38BDF8', size=10)))
+                
+                fig_mc.update_layout(
+                    title="Cone of Uncertainty (100 Sample Paths)",
+                    template="plotly_dark", 
+                    plot_bgcolor="#1E293B", 
+                    paper_bgcolor="#0E1117", 
+                    margin=dict(l=20, r=20, t=40, b=20),
+                    xaxis_title="Trading Days",
+                    yaxis_title="Portfolio Value ($)"
+                )
+                st.plotly_chart(fig_mc, use_container_width=True)
+                
+            elif mc_res and "error" in mc_res:
+                st.warning(mc_res["error"])
 
 
 if __name__ == "__main__":

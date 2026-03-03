@@ -156,14 +156,19 @@ def answer_contextual_question(question, data, insight, chat_history):
     except Exception as e:
         return f"Chat Error: {e}"
 
-def generate_portfolio_constraints(portfolio_tickers, user_prefs, fundamental_data):
+def generate_portfolio_constraints(portfolio_tickers, user_prefs, fundamental_data, news_data=None):
     """
-    Asks the LLM to return specific weight bounds (min, max) for tickers based on user preferences.
+    Asks the LLM to return specific weight bounds (min, max) for tickers based on user preferences and recent news.
+    Also parses explicit Sector boundary requests from the user's text.
     """
     ticker_context = ""
     for t in portfolio_tickers:
         data = fundamental_data.get(t, {})
-        ticker_context += f"- {t}: Sector={data.get('sector', 'N/A')}, P/B={data.get('price_to_book', 'N/A')}, Div Yield={data.get('dividend_yield', 0)*100:.1f}%, ROIC={data.get('roic', 0)*100:.1f}%\n"
+        news_str = ""
+        if news_data and t in news_data and news_data[t]:
+            news_str = f" | RECENT NEWS: " + " ; ".join(news_data[t])
+            
+        ticker_context += f"- {t}: Sector={data.get('sector', 'N/A')}, P/B={data.get('price_to_book', 'N/A')}, Div Yield={data.get('dividend_yield', 0)*100:.1f}%, ROIC={data.get('roic', 0)*100:.1f}%{news_str}\n"
 
     prompt = f"""
     You are an AI Quantitative Analyst configuring constraints for a Markowitz Mean-Variance Optimizer.
@@ -172,19 +177,27 @@ def generate_portfolio_constraints(portfolio_tickers, user_prefs, fundamental_da
     User Preferences / Goals:
     {user_prefs}
     
-    Fundamental Context:
+    Fundamental Context & Live News:
     {ticker_context}
     
-    Based on the User's qualitative goals, output a stricly formatted JSON dictionary where the keys are the tickers, and the values are a list of [min_weight, max_weight] (as decimals between 0.0 and 1.0).
-    For example, if the user explicitly hates fossil fuels, give Exxon (XOM) a bound of [0.0, 0.0]. 
-    If the user wants dividend yield, give high dividend tickers a higher max_weight (e.g., [0.05, 0.40]).
-    Default bounds if no strong opinion is [0.0, 0.40].
+    Based on the User's qualitative goals and live news, output a strictly formatted JSON parsing the absolute mathematical boundaries for the optimization matrix.
     
-    Output ONLY valid JSON. No markdown formatting, no explanations. Do not include ```json or ``` blocks.
-    Example:
+    RULES:
+    1. If the RECENT NEWS for a ticket indicates a severe black swan event (e.g., bankruptcy risk, major SEC probe, unexpected CEO resignation), you MUST set its max_weight to 0.0 to liquidate it.
+    2. Read the "User Preferences". If they explicitly ask to cap or floor a specific SECTOR (e.g., "Max 20% in Technology"), translate that into the `sector_bounds` dictionary. If not specified, leave `sector_bounds` empty.
+    3. Determine `ticker_bounds` `[min_weight, max_weight]` between 0.0 and 1.0 for each specific asset based on their alignment with the user's goals. Default bounds if no strong opinion is [0.0, 0.40].
+    
+    Output ONLY valid JSON. No markdown formatting, no explanations. 
+    Example Format:
     {{
-        "AAPL": [0.0, 0.4],
-        "XOM": [0.0, 0.0]
+        "ticker_bounds": {{
+            "AAPL": [0.0, 0.4],
+            "XOM": [0.0, 0.0]  // E.g., if user banned fossil fuels or bad news hit
+        }},
+        "sector_bounds": {{
+            "Technology": [0.0, 0.20],  // E.g., if user said "Max 20% in Tech"
+            "Energy": [0.05, 1.0]       // E.g., if user said "I want at least 5% Energy"
+        }}
     }}
     """
     
