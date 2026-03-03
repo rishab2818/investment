@@ -39,7 +39,7 @@ def main():
     st.sidebar.title(f"📈 {config.APP_TITLE}")
     st.sidebar.caption(config.APP_SUBTITLE)
     st.sidebar.markdown("---")
-    navigation = st.sidebar.radio("Navigation", ["Dashboard / Screener", "Single Stock Analysis", "Backtesting Engine"])
+    navigation = st.sidebar.radio("Navigation", ["Dashboard / Screener", "Single Stock Analysis", "Backtesting Engine", "AI Portfolio Rebalancer"])
     
     st.sidebar.markdown("---")
     with st.sidebar.expander("⚙️ API Configuration", expanded=False):
@@ -534,6 +534,201 @@ def main():
                     components.html(results["quantstats_html"], height=1000, scrolling=True)
                 else:
                     st.warning("QuantStats report generation failed. Check the logs.")
+
+    elif navigation == "AI Portfolio Rebalancer":
+        st.title("🧠 AI Portfolio Rebalancer & Optimizer")
+        st.markdown("Transform your existing portfolio. We combine mathematical optimization (Modern Portfolio Theory) and AI qualitative analysis to align your holdings with your goals.")
+        
+        # --- Step 1: Input Portfolio ---
+        st.subheader("1. Enter Your Current Holdings")
+        
+        import pandas as pd
+        if "rebalance_portfolio_df" not in st.session_state:
+            st.session_state.rebalance_portfolio_df = pd.DataFrame([
+                {"Ticker": "AAPL", "Weight (%)": 50.0},
+                {"Ticker": "MSFT", "Weight (%)": 30.0},
+                {"Ticker": "TSLA", "Weight (%)": 20.0}
+            ])
+            
+        edited_df = st.data_editor(
+            st.session_state.rebalance_portfolio_df, 
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Ticker": st.column_config.TextColumn("Ticker Symbol", required=True),
+                "Weight (%)": st.column_config.NumberColumn("Allocation Weight (%)", required=True, min_value=0.0, max_value=100.0, format="%.1f%%")
+            }
+        )
+        st.session_state.rebalance_portfolio_df = edited_df
+        
+        # Normalize weights silently
+        current_sum = edited_df["Weight (%)"].sum()
+        if current_sum == 0:
+            st.error("Total portfolio weight cannot be 0%.")
+            return
+            
+        original_weights = {row["Ticker"].upper(): float(row["Weight (%)"])/100.0 for _, row in edited_df.iterrows() if row["Ticker"]}
+        tickers = list(original_weights.keys())
+        
+        st.markdown("---")
+        # --- Step 2: Investor Profiling ---
+        st.subheader("2. Define Your Investment Strategy")
+        
+        col_prof1, col_prof2 = st.columns(2)
+        with col_prof1:
+            horizon = st.selectbox("Investment Horizon", ["< 1 Year", "1 - 3 Years", "3 - 5 Years", "5 - 10 Years", "10+ Years"], index=3)
+            goal = st.selectbox("Primary Goal", ["Capital Preservation", "Balanced Growth & Income", "Aggressive Growth", "Deep Value", "Dividend Generation"], index=1)
+        with col_prof2:
+             risk_tol = st.select_slider("Risk Tolerance", options=["Very Conservative", "Conservative", "Moderate", "Aggressive", "Maximum Alpha"])
+             
+        qualitative_prefs = st.text_area("Specific Qualitative Preferences & Exclusions (Optional)", 
+                                         placeholder="e.g., 'I want to heavily bias towards tech, but absolutely no fossil fuels and no companies with high debt.'")
+                                         
+        user_prompt_profile = f"Horizon: {horizon}. Goal: {goal}. Risk Tolerance: {risk_tol}. Specific preferences: {qualitative_prefs}"
+        
+        if st.button("Analyze & Rebalance Portfolio", type="primary", use_container_width=True):
+            with st.status("Rebalancing Engine Active...", expanded=True) as status:
+                import plotly.graph_objects as go
+                from models.optimizer import generate_rebalance_plan
+                from models.portfolio_backtester import run_portfolio_backtest
+                from models.llm_analyzer import generate_portfolio_constraints, generate_portfolio_narrative
+                from data.fetcher import get_stock_fundamentals
+                
+                st.write("Fetching real-time fundamentals for current holdings...")
+                # Fetch basic fundamentals to feed the AI
+                fundamental_context = {}
+                for t in tickers:
+                    data = get_stock_fundamentals(t)
+                    if "error" not in data:
+                        fundamental_context[t] = data
+                        
+                st.write("AI is analyzing your goals and generating mathematical constraints...")
+                # Ask AI for bounds
+                ai_bounds = generate_portfolio_constraints(tickers, user_prompt_profile, fundamental_context)
+                
+                st.write("Running PyPortfolioOpt Mathematical Optimizer...")
+                # Objective picking
+                objective = "min_volatility" if risk_tol in ["Very Conservative", "Conservative"] else "max_sharpe"
+                opt_result = generate_rebalance_plan(tickers, constraint_overrides=ai_bounds, objective=objective)
+                
+                if opt_result.get("error"):
+                    status.update(label="Optimization Failed", state="error", expanded=True)
+                    st.error(opt_result["error"])
+                else:
+                    proposed_weights = opt_result["weights"]
+                    st.session_state.proposed_weights = proposed_weights
+                    st.session_state.original_weights = original_weights
+                    
+                    st.write("Simulating historical performance for Empirical Validation...")
+                    # Isolate backtest validation
+                    backtest_period = "5y" if horizon in ["3 - 5 Years", "5 - 10 Years", "10+ Years"] else "1y"
+                    bt_result = run_portfolio_backtest(tickers, original_weights, proposed_weights, period=backtest_period)
+                    
+                    st.write("Robo-Advisor is writing the final recommendation memo...")
+                    orig_metrics = bt_result.get("original_metrics") if "error" not in bt_result else None
+                    opt_metrics = bt_result.get("optimized_metrics") if "error" not in bt_result else None
+                    
+                    narrative = generate_portfolio_narrative(
+                        original_weights, 
+                        proposed_weights, 
+                        user_prompt_profile,
+                        opt_result, 
+                        original_metrics=orig_metrics,
+                        optimized_metrics=opt_metrics
+                    )
+                    
+                    st.session_state.rebalance_narrative = narrative
+                    st.session_state.rebalance_bt_result = bt_result
+                    st.session_state.rebalance_opt_result = opt_result
+                    
+                    status.update(label="Rebalance Complete!", state="complete", expanded=False)
+                    
+        # --- Step 3: Display Results ---
+        if "proposed_weights" in st.session_state:
+            st.markdown("---")
+            st.subheader("3. Your Optimized Portfolio")
+            
+            # The Before & After Pie Charts
+            import plotly.graph_objects as go
+            
+            orig_w = st.session_state.original_weights
+            prop_w = st.session_state.proposed_weights
+            
+            # Filter negligible weights for cleaner plots
+            orig_labels = [k for k, v in orig_w.items() if v > 0.001]
+            orig_values = [v for v in orig_w.values() if v > 0.001]
+            prop_labels = [k for k, v in prop_w.items() if v > 0.001]
+            prop_values = [v for v in prop_w.values() if v > 0.001]
+            
+            col_pie1, col_pie2 = st.columns(2)
+            with col_pie1:
+                fig1 = go.Figure(data=[go.Pie(labels=orig_labels, values=orig_values, hole=.4, textinfo='label+percent')])
+                fig1.update_layout(title="Original Allocation", template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", margin=dict(l=20, r=20, t=40, b=20), height=300)
+                st.plotly_chart(fig1, use_container_width=True)
+                
+            with col_pie2:
+                fig2 = go.Figure(data=[go.Pie(labels=prop_labels, values=prop_values, hole=.4, textinfo='label+percent')])
+                fig2.update_layout(title="AI Optimized Allocation", template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", margin=dict(l=20, r=20, t=40, b=20), height=300)
+                st.plotly_chart(fig2, use_container_width=True)
+                
+            # The AI Justification Message
+            st.markdown("### 🤖 Robo-Advisor Memo")
+            render_ai_insight(st.session_state.rebalance_narrative, icon="👔")
+            
+            # --- TRANSPARENCY SECTION ---
+            st.markdown("---")
+            with st.expander("🔍 Engine Transparency: Math & Constraints", expanded=False):
+                st.markdown("This section proves exactly how the AI and Math engine arrived at the target weights.")
+                
+                opt_res = st.session_state.rebalance_opt_result
+                
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    st.markdown("**AI Generated Optimization Constraints**")
+                    st.caption("The AI set these hard mathematical boundaries based on your qualitative goals.")
+                    if "applied_bounds" in opt_res and opt_res["applied_bounds"]:
+                        bounds = opt_res["applied_bounds"]
+                        tickers = list(orig_w.keys())
+                        bounds_df = pd.DataFrame([{"Ticker": t, "Min Weight": f"{b[0]*100:.1f}%", "Max Weight": f"{b[1]*100:.1f}%"} for t, b in zip(tickers, bounds)])
+                        st.dataframe(bounds_df, use_container_width=True, hide_index=True)
+                        
+                with col_t2:
+                    st.markdown("**Asset Correlation Matrix**")
+                    st.caption("PyPortfolioOpt uses this to maximize diversification (find un-correlated assets).")
+                    if "correlation_matrix" in opt_res and opt_res["correlation_matrix"]:
+                        import plotly.express as px
+                        corr_fig = px.imshow(opt_res["correlation_matrix"], 
+                                             x=opt_res.get("correlation_tickers", []),
+                                             y=opt_res.get("correlation_tickers", []),
+                                             text_auto=".2f", 
+                                             aspect="auto",
+                                             color_continuous_scale="RdBu_r")
+                        corr_fig.update_layout(template="plotly_dark", plot_bgcolor="#1E293B", paper_bgcolor="#0E1117", margin=dict(l=20, r=20, t=40, b=20), height=300)
+                        st.plotly_chart(corr_fig, use_container_width=True)
+            
+            # Validation Backtest Proof
+            st.markdown("---")
+            st.subheader("Empirical Validation (Historical Backtest)")
+            bt_res = st.session_state.rebalance_bt_result
+            if "error" in bt_res:
+                st.warning(f"Could not generate empirical backtest: {bt_res['error']}")
+            else:
+                st.info(f"Simulated trajectory of both portfolios over the past timeframe.")
+                fig_bt = go.Figure()
+                fig_bt.add_trace(go.Scatter(x=bt_res['dates'], y=bt_res['original_series'], name="Original Portfolio", line=dict(color='#94A3B8', width=2, dash='dot')))
+                fig_bt.add_trace(go.Scatter(x=bt_res['dates'], y=bt_res['optimized_series'], name="Optimized Portfolio", line=dict(color='#10B981', width=3)))
+                fig_bt.update_layout(template="plotly_dark", plot_bgcolor="#1E293B", paper_bgcolor="#0E1117", margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_bt, use_container_width=True)
+                
+                # Validation metrics
+                orig_m = bt_res['original_metrics']
+                opt_m = bt_res['optimized_metrics']
+                
+                v_col1, v_col2, v_col3 = st.columns(3)
+                with v_col1: render_metric_card("Annualized Return", f"Orig: {orig_m['annual_return']*100:.1f}% | New: {opt_m['annual_return']*100:.1f}%", is_positive=opt_m['annual_return'] > orig_m['annual_return'])
+                with v_col2: render_metric_card("Sharpe Ratio", f"Orig: {orig_m['sharpe']:.2f} | New: {opt_m['sharpe']:.2f}", is_positive=opt_m['sharpe'] > orig_m['sharpe'])
+                with v_col3: render_metric_card("Max Drawdown", f"Orig: {orig_m['max_drawdown']*100:.1f}% | New: {opt_m['max_drawdown']*100:.1f}%", is_positive=opt_m['max_drawdown'] > orig_m['max_drawdown'])
+
 
 if __name__ == "__main__":
     main()

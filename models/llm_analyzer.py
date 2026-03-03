@@ -155,3 +155,111 @@ def answer_contextual_question(question, data, insight, chat_history):
             return response.text
     except Exception as e:
         return f"Chat Error: {e}"
+
+def generate_portfolio_constraints(portfolio_tickers, user_prefs, fundamental_data):
+    """
+    Asks the LLM to return specific weight bounds (min, max) for tickers based on user preferences.
+    """
+    ticker_context = ""
+    for t in portfolio_tickers:
+        data = fundamental_data.get(t, {})
+        ticker_context += f"- {t}: Sector={data.get('sector', 'N/A')}, P/B={data.get('price_to_book', 'N/A')}, Div Yield={data.get('dividend_yield', 0)*100:.1f}%, ROIC={data.get('roic', 0)*100:.1f}%\n"
+
+    prompt = f"""
+    You are an AI Quantitative Analyst configuring constraints for a Markowitz Mean-Variance Optimizer.
+    
+    User Portfolio Tickers: {', '.join(portfolio_tickers)}
+    User Preferences / Goals:
+    {user_prefs}
+    
+    Fundamental Context:
+    {ticker_context}
+    
+    Based on the User's qualitative goals, output a stricly formatted JSON dictionary where the keys are the tickers, and the values are a list of [min_weight, max_weight] (as decimals between 0.0 and 1.0).
+    For example, if the user explicitly hates fossil fuels, give Exxon (XOM) a bound of [0.0, 0.0]. 
+    If the user wants dividend yield, give high dividend tickers a higher max_weight (e.g., [0.05, 0.40]).
+    Default bounds if no strong opinion is [0.0, 0.40].
+    
+    Output ONLY valid JSON. No markdown formatting, no explanations. Do not include ```json or ``` blocks.
+    Example:
+    {{
+        "AAPL": [0.0, 0.4],
+        "XOM": [0.0, 0.0]
+    }}
+    """
+    
+    try:
+        import json
+        if config.AI_PROVIDER == "openai":
+            import openai
+            client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = response.choices[0].message.content.strip()
+        else:
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            response = model.generate_content(prompt)
+            text = response.text.strip()
+            
+        # Clean up possible markdown code blocks
+        if text.startswith("```json"): text = text[7:]
+        if text.startswith("```"): text = text[3:]
+        if text.endswith("```"): text = text[:-3]
+        
+        return json.loads(text)
+    except Exception as e:
+        # Fallback to no overrides
+        return {}
+
+def generate_portfolio_narrative(original_weights, proposed_weights, user_prefs, metrics, original_metrics=None, optimized_metrics=None):
+    """
+    Generates the final Robo-Advisor narrative explaining the rebalance.
+    """
+    orig_str = ", ".join([f"{k}: {v*100:.1f}%" for k, v in original_weights.items() if v > 0.01])
+    prop_str = ", ".join([f"{k}: {v*100:.1f}%" for k, v in proposed_weights.items() if v > 0.01])
+    
+    perf_context = ""
+    if original_metrics and optimized_metrics:
+        perf_context = f"""
+        Historical Backtest Context (Last 5 Years):
+        - Original Portfolio: {original_metrics.get('annual_return', 0)*100:.1f}% Annualized Return, {original_metrics.get('sharpe', 0):.2f} Sharpe Ratio, {original_metrics.get('max_drawdown', 0)*100:.1f}% Max Drawdown.
+        - AI Optimized Portfolio: {optimized_metrics.get('annual_return', 0)*100:.1f}% Annualized Return, {optimized_metrics.get('sharpe', 0):.2f} Sharpe Ratio, {optimized_metrics.get('max_drawdown', 0)*100:.1f}% Max Drawdown.
+        """
+        
+    prompt = f"""
+    You are an expert, white-glove Robo-Advisor explaining a portfolio rebalance to a client.
+    
+    Their stated goals and preferences:
+    "{user_prefs}"
+    
+    Their Original Allocation:
+    {orig_str}
+    
+    The AI/Math Proposed Optimial Allocation:
+    {prop_str}
+    
+    {perf_context}
+    
+    Write a highly professional, reassuring, and analytical 3-4 paragraph memo explaining EXACTLY why you shifted their money the way you did. 
+    Connect the mathematical shifts directly to their stated qualitative goals (e.g., "To achieve your goal of capital preservation, I reduced your exposure to TSLA from 40% to 10% and reallocated it to lower-volatility dividend payers...").
+    If the historical backtest metrics are provided, explicitly mention how the new portfolio historically provided a better Sharpe ratio (risk-adjusted return) or lower drawdown.
+    Do not give direct financial advice, frame it as an analytical proposal.
+    """
+    
+    try:
+        if config.AI_PROVIDER == "openai":
+            import openai
+            client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content
+        else:
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            response = model.generate_content(prompt)
+            return response.text
+    except Exception as e:
+        return f"Narrative Generation Error: {str(e)}"
