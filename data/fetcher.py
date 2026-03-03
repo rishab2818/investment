@@ -240,6 +240,8 @@ def get_stock_fundamentals(ticker_symbol, wacc=None, terminal_growth=None, proj_
         intrinsic_value = 0
         margin_of_safety = 0
         implied_fcf_growth = 0
+        pv_fcf = 0
+        pv_tv = 0
         shares_out = info.get("sharesOutstanding", 0)
         if shares_out == 0 and current_price > 0 and market_cap > 0:
              shares_out = market_cap / current_price
@@ -284,6 +286,35 @@ def get_stock_fundamentals(ticker_symbol, wacc=None, terminal_growth=None, proj_
                     low_g = mid_g
             implied_fcf_growth = (low_g + high_g) / 2
 
+        # Additional Valuation Models
+        graham_number = 0
+        try:
+            eps = info.get("trailingEps", 0)
+            bvps = info.get("bookValue", 0)
+            if eps and bvps and eps > 0 and bvps > 0:
+                graham_number = np.sqrt(22.5 * eps * bvps)
+        except Exception:
+            pass
+            
+        peter_lynch_value = 0
+        try:
+            peg_ratio = info.get("pegRatio", 0)
+            if peg_ratio and peg_ratio > 0 and current_price > 0:
+                peter_lynch_value = current_price / peg_ratio
+        except Exception:
+            pass
+
+        epv = 0
+        try:
+            import config
+            wacc_to_use = wacc if wacc is not None else config.DCF_WACC
+            ebit = financials.loc["EBIT"].iloc[0] if "EBIT" in financials.index else 0
+            if ebit > 0 and shares_out > 0:
+                adjusted_earnings = ebit * (1 - 0.21) # Assume 21% steady tax rate for NOPAT
+                epv = (adjusted_earnings / wacc_to_use) / shares_out
+        except Exception:
+            pass
+
         return {
             "ticker": ticker_symbol.upper(),
             "name": info.get("longName", ticker_symbol),
@@ -301,6 +332,9 @@ def get_stock_fundamentals(ticker_symbol, wacc=None, terminal_growth=None, proj_
             "intrinsic_value": intrinsic_value,
             "margin_of_safety": margin_of_safety,
             "implied_fcf_growth": implied_fcf_growth,
+            "graham_number": graham_number,
+            "peter_lynch_value": peter_lynch_value,
+            "epv": epv,
             "z_score": z_score,
             "f_score": f_score,
             "m_score": m_score,
@@ -308,7 +342,9 @@ def get_stock_fundamentals(ticker_symbol, wacc=None, terminal_growth=None, proj_
             "sma_200_dist": sma_200_dist,
             "news": news_headlines,
             "macro_10y_yield": macro_10y,
-            "insider_context": insider_context
+            "insider_context": insider_context,
+            "pv_fcf": pv_fcf,
+            "pv_tv": pv_tv
         }
     except Exception as e:
         return {"error": str(e)}

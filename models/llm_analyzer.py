@@ -94,3 +94,64 @@ def analyze_company_moat(company_summary, sector, industry, news=None, implied_g
             return response.text
     except Exception as e:
         return f"AI Analysis Error: Ensure your API Key is correct and you have credits. ({e})"
+
+def answer_contextual_question(question, data, insight, chat_history):
+    """
+    Answers user questions based on the financial data, AI insight, and previous chat history.
+    """
+    history_str = ""
+    for msg in chat_history:
+        history_str += f"{msg['role'].capitalize()}: {msg['content']}\n"
+        
+    prompt = f"""
+    You are an expert institutional equity analyst Assistant.
+    A user is asking you a question about the following company: {data.get('name', data.get('ticker'))} ({data.get('ticker')}).
+    
+    Here is the quantitative data context:
+    - Current Price: ${data.get('current_price', 0):.2f}
+    - Intrinsic Value (DCF): ${data.get('intrinsic_value', 0):.2f}
+    - Margin of Safety: {data.get('margin_of_safety', 0)*100:.1f}%
+    - ROIC: {data.get('roic', 0)*100:.1f}%
+    - debt_to_equity: {data.get('debt_to_equity', 0):.2f}
+    - FCF Growth: {data.get('fcf_cagr', 0)*100:.1f}%
+    - P/B: {data.get('price_to_book', 0):.2f}
+    - Z-Score: {data.get('z_score', 0):.2f}
+    - F-Score: {data.get('f_score', 0)}/9
+    - Dividend Yield: {data.get('dividend_yield', 0)*100:.2f}%
+    - Graham Number: ${data.get('graham_number', 0):.2f}
+    - Peter Lynch Fair Value: ${data.get('peter_lynch_value', 0):.2f}
+    - Earnings Power Value (EPV): ${data.get('epv', 0):.2f}
+    - Sector: {data.get('sector', 'N/A')}
+    
+    Here is the previous AI Insight context:
+    {insight}
+    
+    Previous Chat History:
+    {history_str}
+    
+    User Question: {question}
+    
+    Provide a professional, concise answer. Analyze the numbers critically to explain why a metric might be high or low. Do not provide deterministic financial advice.
+    """
+    try:
+        if config.AI_PROVIDER == "openai":
+            if not config.OPENAI_API_KEY:
+                return "OpenAI API Key is missing. Please add it in the sidebar."
+            import openai
+            client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a financial analyst chatbot. Keep your tone professional and objective."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            return response.choices[0].message.content
+        else:
+            if not config.GEMINI_API_KEY:
+                return "Gemini API Key is missing. Please add it in the sidebar."
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            response = model.generate_content(prompt)
+            return response.text
+    except Exception as e:
+        return f"Chat Error: {e}"

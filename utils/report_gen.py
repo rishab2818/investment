@@ -20,7 +20,7 @@ def clean_text(text):
     if not text: return ""
     return str(text).encode('latin-1', 'replace').decode('latin-1')
 
-def generate_investment_memo(ticker, data, ai_insight, peers_df=None):
+def generate_investment_memo(ticker, data, ai_insight, peers_df=None, chat_history=None):
     """
     Generates a PDF investment memo using fpdf2.
     Returns the PDF as a byte stream that Streamlit can download.
@@ -93,4 +93,21 @@ def generate_investment_memo(ticker, data, ai_insight, peers_df=None):
     pdf.multi_cell(0, 6, clean_insight)
     
     # In fpdf2, output(dest='S') returns a bytearray. 
+    
+    # Append Contextual Chat History conditionally
+    if chat_history and len(chat_history) > 0:
+        pdf.add_page()
+        pdf.set_font("helvetica", 'B', 14)
+        pdf.cell(0, 8, "5. Contextual Chat History", ln=True)
+        pdf.set_font("helvetica", '', 10)
+        
+        for msg in chat_history:
+            role = "User" if msg["role"] == "user" else "AI Analyst"
+            pdf.set_font("helvetica", 'B', 10)
+            pdf.cell(0, 6, clean_text(f"{role}:"), ln=True)
+            pdf.set_font("helvetica", '', 10)
+            clean_msg = clean_text(msg['content']).replace("**", "") 
+            pdf.multi_cell(0, 5, clean_msg)
+            pdf.ln(3)
+
     return bytes(pdf.output(dest="S"))
