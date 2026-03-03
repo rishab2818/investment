@@ -10,6 +10,10 @@ load_dotenv()
 # You can change this or set it as an environment variable
 # Best Practice: create a .env file locally with GEMINI_API_KEY="your-key"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# Default AI Provider
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "gemini") # "gemini" or "openai"
 
 # Initialize Gemini
 try:

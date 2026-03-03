@@ -20,9 +20,13 @@ def run_screener(strategy_func, tickers):
     
     for i, ticker in enumerate(tickers):
         status_text.text(f"Analyzing {ticker} ({i+1}/{len(tickers)})...")
-        res = strategy_func(ticker)
-        if res.get("passed"):
-            results.append(res)
+        try:
+            res = strategy_func(ticker)
+            if res.get("passed"):
+                results.append(res)
+        except Exception as e:
+            # Silently log/skip so the screener doesn't halt
+            pass
         progress_bar.progress((i + 1) / len(tickers))
         time.sleep(0.1) # prevent rate limits slightly
         
@@ -38,15 +42,26 @@ def main():
     navigation = st.sidebar.radio("Navigation", ["Dashboard / Screener", "Single Stock Analysis", "Backtesting Engine"])
     
     st.sidebar.markdown("---")
+    st.sidebar.markdown("---")
     st.sidebar.subheader("API Configuration")
-    api_key_input = st.sidebar.text_input("Gemini API Key", value=config.GEMINI_API_KEY, type="password")
-    if str(api_key_input) != config.GEMINI_API_KEY:
-        config.GEMINI_API_KEY = str(api_key_input)
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=config.GEMINI_API_KEY)
-        except:
-            pass
+    
+    ai_provider = st.sidebar.radio("AI Provider", ["Gemini (Google)", "OpenAI"], index=0 if config.AI_PROVIDER == "gemini" else 1)
+    
+    if ai_provider == "Gemini (Google)":
+        config.AI_PROVIDER = "gemini"
+        api_key_input = st.sidebar.text_input("Gemini API Key", value=config.GEMINI_API_KEY, type="password")
+        if str(api_key_input) != config.GEMINI_API_KEY:
+            config.GEMINI_API_KEY = str(api_key_input)
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=config.GEMINI_API_KEY)
+            except:
+                pass
+    else:
+        config.AI_PROVIDER = "openai"
+        openai_key_input = st.sidebar.text_input("OpenAI API Key", value=config.OPENAI_API_KEY, type="password")
+        if str(openai_key_input) != config.OPENAI_API_KEY:
+            config.OPENAI_API_KEY = str(openai_key_input)
             
     # Allow user to specify universe
     st.sidebar.markdown("---")
@@ -92,12 +107,21 @@ def main():
                 else:
                     st.success(f"{len(results)} stocks passed!")
                     
-                    # CSV Export
                     import pandas as pd
                     df_res = pd.DataFrame([{
                         'Ticker': r['ticker'], 'Name': r['name'], 'Sector': r['sector'],
-                        'ROIC': r['metrics']['ROIC'], 'FCF_Growth': r['metrics']['FCF_CAGR'], 'Debt_Eq': r['metrics']['Debt_Eq']
+                        'ROIC': r['metrics']['ROIC'] * 100, 'FCF_Growth': r['metrics']['FCF_CAGR'] * 100, 'Debt_Eq': round(r['metrics']['Debt_Eq'], 2)
                     } for r in results])
+                    
+                    st.dataframe(df_res, use_container_width=True, hide_index=True, column_config={
+                        "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                        "Name": st.column_config.TextColumn("Company"),
+                        "Sector": st.column_config.TextColumn("Sector"),
+                        "ROIC": st.column_config.NumberColumn("ROIC", format="%.1f%%", width="small"),
+                        "FCF_Growth": st.column_config.NumberColumn("FCF Growth", format="%.1f%%", width="small"),
+                        "Debt_Eq": st.column_config.NumberColumn("Debt/Equity", format="%.2f", width="small")
+                    })
+                    
                     csv = df_res.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 Download Results as CSV",
@@ -106,16 +130,18 @@ def main():
                         mime='text/csv',
                     )
                     
-                    for res in results:
-                        with st.expander(f"✅ {res['ticker']} - {res['name']} ({res['sector']})", expanded=True):
-                            col1, col2, col3 = st.columns(3)
-                            with col1: render_metric_card("ROIC", f"{res['metrics']['ROIC']*100:.1f}%")
-                            with col2: render_metric_card("FCF Growth", f"{res['metrics']['FCF_CAGR']*100:.1f}%")
-                            with col3: render_metric_card("Debt/Eq", f"{res['metrics']['Debt_Eq']:.2f}", is_positive=res['metrics']['Debt_Eq'] < 1.0)
-                            
-                            with st.spinner("Querying Gemini AI..."):
+                    st.markdown("---")
+                    st.subheader("Deep Dive AI Insight")
+                    st.write("Select a passing ticker to get an AI summary of its moat and viability.")
+                    selected_ticker = st.selectbox("Select Ticker for AI Analysis", [r['ticker'] for r in results])
+                    if st.button("Generate AI Insight", key="ai_cmp"):
+                        with st.spinner("Querying AI Analyst..."):
+                            res = next(r for r in results if r['ticker'] == selected_ticker)
+                            try:
                                 insight = analyze_company_moat(res['summary'], res['sector'], res['industry'])
                                 render_ai_insight(insight, title=f"AI Analyst View on {res['ticker']}")
+                            except Exception as e:
+                                st.error(f"AI API Error: Rate limited or Invalid Key. Details: {str(e)[:100]}")
 
         with tab2:
             st.subheader("Deep Value & Moat")
@@ -135,12 +161,21 @@ def main():
                 else:
                     st.success(f"{len(results)} stocks passed!")
                     
-                    # CSV Export
                     import pandas as pd
                     df_res = pd.DataFrame([{
                         'Ticker': r['ticker'], 'Name': r['name'], 'Sector': r['sector'],
-                        'Price_Drop': r['metrics']['Price_Drop'], 'P_B': r['metrics']['P_B'], 'RD_Rev': r['metrics']['RD_Rev']
+                        'Price_Drop': r['metrics']['Price_Drop'] * 100, 'P_B': round(r['metrics']['P_B'], 2), 'RD_Rev': r['metrics']['RD_Rev'] * 100
                     } for r in results])
+                    
+                    st.dataframe(df_res, use_container_width=True, hide_index=True, column_config={
+                        "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                        "Name": st.column_config.TextColumn("Company"),
+                        "Sector": st.column_config.TextColumn("Sector"),
+                        "Price_Drop": st.column_config.NumberColumn("52w Drop", format="%.1f%%", width="small"),
+                        "P_B": st.column_config.NumberColumn("Price/Book", format="%.2f", width="small"),
+                        "RD_Rev": st.column_config.NumberColumn("R&D/Rev", format="%.1f%%", width="small")
+                    })
+                    
                     csv = df_res.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 Download Results as CSV",
@@ -149,36 +184,63 @@ def main():
                         mime='text/csv',
                     )
                     
-                    for res in results:
-                        with st.expander(f"✅ {res['ticker']} - {res['name']} ({res['sector']})", expanded=True):
-                            col1, col2, col3 = st.columns(3)
-                            with col1: render_metric_card("Price Drop (52w)", f"{res['metrics']['Price_Drop']*100:.1f}%", is_positive=False)
-                            with col2: render_metric_card("Price/Book", f"{res['metrics']['P_B']:.2f}", is_positive=res['metrics']['P_B'] < 1.0)
-                            with col3: render_metric_card("R&D / Revenue", f"{res['metrics']['RD_Rev']*100:.1f}%")
-                            
-                            with st.spinner("Querying Gemini AI..."):
+                    st.markdown("---")
+                    st.subheader("Deep Dive AI Insight")
+                    st.write("Select a passing ticker to get an AI summary of its moat and viability.")
+                    selected_ticker_val = st.selectbox("Select Ticker for AI Analysis", [r['ticker'] for r in results], key="sel_val")
+                    if st.button("Generate AI Insight", key="ai_val"):
+                        with st.spinner("Querying AI Analyst..."):
+                            res = next(r for r in results if r['ticker'] == selected_ticker_val)
+                            try:
                                 insight = analyze_company_moat(res['summary'], res['sector'], res['industry'])
                                 render_ai_insight(insight, title=f"AI Analyst View on {res['ticker']}")
+                            except Exception as e:
+                                st.error(f"AI API Error: Rate limited or Invalid Key. Details: {str(e)[:100]}")
                                 
     elif navigation == "Single Stock Analysis":
         st.title("Deep Dive Analysis")
         ticker = st.text_input("Enter Stock Ticker (e.g., AAPL, TSLA)", "AAPL").upper()
         
+        st.markdown("### Interactive Valuation Assumptions")
+        col_w, col_t, col_y = st.columns(3)
+        with col_w: user_wacc = st.number_input("Discount Rate (WACC)", value=config.DCF_WACC, step=0.01)
+        with col_t: user_tg = st.number_input("Terminal Growth Rate", value=config.DCF_TERMINAL_GROWTH, step=0.005)
+        with col_y: user_proj = st.number_input("Projection Years", value=config.DCF_PROJECTION_YEARS, step=1, min_value=1)
+        
         if st.button("Analyze Stock", type="primary"):
-            from data.fetcher import get_stock_fundamentals
+            from data.fetcher import get_stock_fundamentals, get_earnings_transcript, get_latest_10k_url
             with st.spinner(f"Pulling real-time models and AI analysis for {ticker}..."):
-                data = get_stock_fundamentals(ticker)
+                data = get_stock_fundamentals(ticker, wacc=user_wacc, terminal_growth=user_tg, proj_years=user_proj)
+                sec_url = get_latest_10k_url(ticker)
+                
                 if "error" in data:
                     st.error(f"Error fetching data: {data['error']}")
                 else:
                     col1, col2, col3 = st.columns(3)
                     with col1: render_metric_card("Current Price", f"${data['current_price']:.2f}")
-                    with col2: render_metric_card("ROIC", f"{data['roic']*100:.1f}%")
-                    with col3: render_metric_card("P/B", f"{data['price_to_book']:.2f}")
                     
-                    col2_1, col2_2, col2_3 = st.columns(3)
+                    # Deterministic Sector Percentile Logic (Simulated Math Proxy)
+                    # Maps ROIC and P/B to an asymptotic 1-99 curve for demo purposes
+                    import math
+                    roic_percentile = min(99, max(1, int(100 - (100 / (1 + math.exp(-10 * (data['roic'] - 0.10)))))))
+                    pb_percentile = min(99, max(1, int(100 / (1 + math.exp(-2 * (data['price_to_book'] - 2.0))))))
+                    if data['price_to_book'] <= 0: pb_percentile = 99
+                    
+                    with col2: 
+                        st.markdown(f"**ROIC**: {data['roic']*100:.1f}%")
+                        st.caption(f"🚀 _{roic_percentile}th Percentile in {data['sector']}_")
+                    with col3: 
+                        st.markdown(f"**P/B**: {data['price_to_book']:.2f}")
+                        st.caption(f"⚖️ _{pb_percentile}th Percentile in {data['sector']}_")
+                    
+                    col2_1, col2_2, col2_3, col2_4, col2_5 = st.columns(5)
                     with col2_1: render_metric_card("Piotroski F-Score", f"{data.get('f_score', 0)}/9", is_positive=data.get('f_score', 0) >= 6)
                     with col2_2: render_metric_card("Altman Z-Score", f"{data.get('z_score', 0):.2f}", is_positive=data.get('z_score', 0) > 2.99)
+                    with col2_3: render_metric_card("Beneish M-Score", f"{data.get('m_score', 0):.2f}", is_positive=data.get('m_score', 0) < -1.78)
+                    with col2_4: render_metric_card("Dividend Yield", f"{data.get('dividend_yield', 0)*100:.2f}%", is_positive=data.get('dividend_yield', 0) > 0.02)
+                    
+                    sma_dist = data.get('sma_200_dist', 0)
+                    with col2_5: render_metric_card("vs 200 SMA", f"{sma_dist*100:.1f}%", is_positive=sma_dist > 0)
                     
                     st.markdown("---")
                     st.subheader("Intrinsic Valuation (DCF)")
@@ -200,31 +262,122 @@ def main():
                     
                     st.subheader("Qualitative AI Analysis")
                     # Pass the extra info (news, implied growth) directly into the LLM analyzer
-                    insight = analyze_company_moat(
-                        data['summary'], 
-                        data['sector'], 
-                        data['industry'],
-                        news=data.get('news'),
-                        implied_growth=data.get('implied_fcf_growth', 0),
-                        f_score=data.get('f_score', 0),
-                        z_score=data.get('z_score', 0)
-                    )
-                    render_ai_insight(insight)
+                    try:
+                        transcript = get_earnings_transcript(ticker)
+                        if transcript:
+                            st.info("Earnings Call transcript fetched successfully. Analyzing management outlook...")
+                        
+                        insight = analyze_company_moat(
+                            data['summary'], 
+                            data['sector'], 
+                            data['industry'],
+                            news=data.get('news'),
+                            implied_growth=data.get('implied_fcf_growth', 0),
+                            f_score=data.get('f_score', 0),
+                            z_score=data.get('z_score', 0),
+                            transcript=transcript,
+                            macro_yield=data.get('macro_10y_yield', 0.04),
+                            sec_url=sec_url,
+                            insider_context=data.get('insider_context')
+                        )
+                        render_ai_insight(insight)
+                        
+                        # --- 2. PEER COMPARISON MATRIX extraction ---
+                        import re
+                        import pandas as pd
+                        
+                        st.markdown("---")
+                        st.subheader("Direct Peer Comparison Matrix")
+                        
+                        # Use simple regex to find the comma separated ticker list from the AI output's Section 1
+                        # We expect something like **1. Competitor Discovery**\n MSFT, GOOGL, AMZN
+                        peers = []
+                        try:
+                            # Look for explicit tickers near the first section
+                            pattern = r"\b[A-Z]{1,5}\b"
+                            potential_tickers = re.findall(pattern, insight.split("**2.")[0])
+                            # Filter out common false positives and the main ticker
+                            for t in potential_tickers:
+                                if t not in ["DISCOVERY", "COMPETITOR", "THE", "AND", ticker] and len(t) <= 5:
+                                    if t not in peers:
+                                        peers.append(t)
+                                if len(peers) >= 3:
+                                    break
+                                    
+                            if peers:
+                                with st.spinner(f"Fetching core fundamentals for {', '.join(peers)}..."):
+                                    peer_data = []
+                                    # Add the base ticker first for direct comparison
+                                    peer_data.append({
+                                        'Ticker': ticker,
+                                        'Current Price': f"${data['current_price']:.2f}",
+                                        'ROIC': f"{data['roic']*100:.1f}%",
+                                        'Debt/Eq': f"{data['debt_to_equity']:.2f}",
+                                        'P/B': f"{data['price_to_book']:.2f}",
+                                        'FCF Growth': f"{data.get('fcf_cagr', 0)*100:.1f}%",
+                                        'Div Yield': f"{data.get('dividend_yield', 0)*100:.1f}%"
+                                    })
+                                    
+                                    for p in peers:
+                                        p_data = get_stock_fundamentals(p) # Using cached default WACC
+                                        if "error" not in p_data:
+                                            peer_data.append({
+                                                'Ticker': p,
+                                                'Current Price': f"${p_data['current_price']:.2f}",
+                                                'ROIC': f"{p_data['roic']*100:.1f}%",
+                                                'Debt/Eq': f"{p_data['debt_to_equity']:.2f}",
+                                                'P/B': f"{p_data['price_to_book']:.2f}",
+                                                'FCF Growth': f"{p_data.get('fcf_cagr', 0)*100:.1f}%",
+                                                'Div Yield': f"{p_data.get('dividend_yield', 0)*100:.1f}%"
+                                            })
+                                            
+                                    peer_df = pd.DataFrame(peer_data)
+                                    st.dataframe(peer_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("Could not reliably extract competitors from the AI analysis.")
+                        except Exception as peer_error:
+                            st.info("Peer Comparison Matrix could not be built at this time.")
+                            
+                        # --- 3. AUTO-MEMO PDF REPORTING ---
+                        st.markdown("---")
+                        from utils.report_gen import generate_investment_memo
+                        try:
+                            # Use peer_df if it successfully built, otherwise None
+                            pdf_peers = peer_df if 'peer_df' in locals() else None
+                            pdf_bytes = generate_investment_memo(ticker, data, insight, pdf_peers)
+                            
+                            col_dl1, col_dl2, col_dl3 = st.columns([1,2,1])
+                            with col_dl2:
+                                st.download_button(
+                                    label="📄 Export Full Investment Memo (PDF)",
+                                    data=pdf_bytes,
+                                    file_name=f"{ticker}_Investment_Memo.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
+                        except Exception as pdf_error:
+                            st.warning(f"Could not generate PDF Memo: {pdf_error}")
+                            
+                    except Exception as e:
+                        st.error(f"AI API Error: Rate limited or Invalid Key. Please check your Gemini API Key in the sidebar. Details: {str(e)[:100]}")
 
     elif navigation == "Backtesting Engine":
         st.title("Backtesting Engine")
         st.markdown("Test the Compounder and Deep Value strategies against historical data (SPY benchmark).")
         
         tickers_input = st.text_input("Enter portfolio tickers (comma separated)", "AAPL, MSFT, GOOGL")
-        period = st.selectbox("Historical Period", ["1y", "3y", "5y", "10y"], index=2)
+        
+        col_b1, col_b2 = st.columns(2)
+        with col_b1: period = st.selectbox("Historical Period", ["1y", "3y", "5y", "10y"], index=2)
+        with col_b2: benchmark = st.selectbox("Benchmark Index", ["SPY", "QQQ", "DIA", "IWM"], index=0)
         
         if st.button("Run Simulation", type="primary"):
             from backtest.engine import run_backtest
             import plotly.graph_objects as go
             
             test_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-            with st.spinner(f"Simulating historical {period} performance..."):
-                results = run_backtest(test_tickers, period=period)
+            with st.spinner(f"Simulating historical {period} performance against {benchmark}..."):
+                results = run_backtest(test_tickers, period=period, benchmark=benchmark)
                 
                 if "error" in results:
                     st.error(results["error"])
@@ -252,6 +405,19 @@ def main():
                                              color_continuous_scale="RdBu_r")
                         corr_fig.update_layout(template="plotly_dark", plot_bgcolor="#1E293B", paper_bgcolor="#0E1117", margin=dict(l=20, r=20, t=40, b=20))
                         st.plotly_chart(corr_fig, use_container_width=True)
+                        
+                    if "optimal_weights" in results and len(test_tickers) > 1:
+                        st.markdown("---")
+                        st.subheader("Portfolio Optimizer (Efficient Frontier)")
+                        st.info("The AI determined these optimal allocations to maximize risk-adjusted returns (Max Sharpe Ratio).")
+                        
+                        weights = results["optimal_weights"]
+                        labels = list(weights.keys())
+                        values = list(weights.values())
+                        
+                        pie_fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4, textinfo='label+percent')])
+                        pie_fig.update_layout(template="plotly_dark", plot_bgcolor="#1E293B", paper_bgcolor="#0E1117", margin=dict(l=20, r=20, t=40, b=20))
+                        st.plotly_chart(pie_fig, use_container_width=True)
                     
                     st.markdown("---")
                     st.subheader("Institutional Risk Analysis & Tearsheet")

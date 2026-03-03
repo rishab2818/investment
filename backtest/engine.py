@@ -1,6 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import scipy.optimize as sco
 
 def calculate_sharpe_ratio(returns, risk_free_rate=0.04):
     """Calculate annualized Sharpe Ratio"""
@@ -16,6 +17,39 @@ def calculate_max_drawdown(prices):
     rolling_max = prices.cummax()
     drawdowns = (prices - rolling_max) / rolling_max
     return drawdowns.min()
+
+def get_optimal_portfolio(returns, risk_free_rate=0.04):
+    """
+    Calculates the Markowitz Efficient Frontier optimal weights (Max Sharpe Ratio).
+    Returns a dictionary of {ticker: weight}.
+    """
+    if returns.empty or len(returns.columns) < 2:
+        return {}
+        
+    num_assets = len(returns.columns)
+    mean_returns = returns.mean() * 252
+    cov_matrix = returns.cov() * 252
+
+    def negative_sharpe_ratio(weights, mean_returns, cov_matrix, risk_free_rate):
+        p_ret = np.sum(mean_returns * weights)
+        p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+        return -(p_ret - risk_free_rate) / p_vol
+
+    args = (mean_returns, cov_matrix, risk_free_rate)
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    bounds = tuple((0.0, 1.0) for asset in range(num_assets))
+    
+    # Start with equal weights
+    initial_guess = num_assets * [1. / num_assets,]
+
+    opts = sco.minimize(negative_sharpe_ratio, initial_guess, args=args,
+                        method='SLSQP', bounds=bounds, constraints=constraints)
+
+    if opts.success:
+        return {ticker: round(weight, 4) for ticker, weight in zip(returns.columns, opts.x)}
+    else:
+        # Fallback to equal weight if optimization fails
+        return {ticker: round(1.0/num_assets, 4) for ticker in returns.columns}
 
 def run_backtest(tickers, period="5y", benchmark="SPY"):
     """
@@ -65,6 +99,9 @@ def run_backtest(tickers, period="5y", benchmark="SPY"):
         # Correlation Matrix
         correlation_matrix = returns[tickers].corr()
         
+        # Calculate Optimal Weights
+        optimal_weights = get_optimal_portfolio(returns[tickers])
+        
         # --- QUANTSTATS INTEGRATION ---
         import quantstats as qs
         import tempfile
@@ -104,6 +141,7 @@ def run_backtest(tickers, period="5y", benchmark="SPY"):
             "portfolio_cum_series": port_cum,
             "benchmark_cum_series": bench_cum,
             "correlation_matrix": correlation_matrix,
+            "optimal_weights": optimal_weights,
             "quantstats_html": quantstats_html
         }
         
